@@ -1,0 +1,25 @@
+# Core
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+pydantic>=2.0
+pydantic-settings>=2.0
+numpy>=1.24.0
+
+# Audio / ML
+tensorflow>=2.16.0
+basic-pitch>=0.3.0
+pretty-midi>=0.2.10
+librosa>=0.8.0
+
+# Guitar Pro
+pyguitarpro>=0.9
+
+# Dev
+pytest>=7.4
+pytest-asyncio>=0.21
+httpx>=0.25
+
+# NOTE: On Python 3.13 / macOS, install tensorflow first, then basic-pitch
+# with --no-deps to avoid the tensorflow-macos version conflict.
+# See Makefile for automated setup.
