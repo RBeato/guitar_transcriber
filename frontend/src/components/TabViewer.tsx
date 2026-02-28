@@ -1,10 +1,30 @@
 import { useRef, useEffect, useState } from "react";
+import { Logger } from "../services/api";
+
+type ViewMode = "tab" | "score" | "both";
 
 interface TabViewerProps {
   tex: string | null;
+  log?: Logger;
+  viewMode?: ViewMode;
 }
 
-export default function TabViewer({ tex }: TabViewerProps) {
+function staveProfileFor(
+  viewMode: ViewMode,
+  alphaTab: typeof import("@coderline/alphatab"),
+) {
+  switch (viewMode) {
+    case "score":
+      return alphaTab.StaveProfile.Score;
+    case "both":
+      return alphaTab.StaveProfile.Default;
+    case "tab":
+    default:
+      return alphaTab.StaveProfile.Tab;
+  }
+}
+
+export default function TabViewer({ tex, log, viewMode = "tab" }: TabViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<import("@coderline/alphatab").AlphaTabApi | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,14 +46,19 @@ export default function TabViewer({ tex }: TabViewerProps) {
       el.innerHTML = "";
     }
 
-    console.log("[TabViewer] Loading alphaTab with tex:", tex.substring(0, 100));
+    log?.info(`alphaTab: loading module...`);
 
     import("@coderline/alphatab")
       .then((alphaTab) => {
+        log?.info("alphaTab: module loaded, creating renderer (no workers)...");
+
         const settings = new alphaTab.Settings();
-        settings.core.engine = "svg";
         settings.core.tex = true;
-        settings.display.staveProfile = alphaTab.StaveProfile.Tab;
+        settings.core.engine = "svg";
+        settings.core.fontDirectory = "/font/";
+        settings.core.useWorkers = false;
+        settings.core.logLevel = alphaTab.LogLevel.Debug;
+        settings.display.staveProfile = staveProfileFor(viewMode, alphaTab);
         settings.display.layoutMode = alphaTab.LayoutMode.Page;
         settings.player.enablePlayer = false;
 
@@ -47,25 +72,32 @@ export default function TabViewer({ tex }: TabViewerProps) {
         const api = new alphaTab.AlphaTabApi(el, settings);
         apiRef.current = api;
 
+        api.renderStarted.on(() => {
+          log?.info("alphaTab: render started...");
+        });
+
         api.renderFinished.on(() => {
-          console.log("[TabViewer] Render finished");
+          log?.success("alphaTab: render finished!");
           setLoading(false);
         });
 
         api.error.on((e: Error) => {
-          console.error("[TabViewer] alphaTab error:", e);
+          log?.error(`alphaTab error: ${e.message || e}`);
           setLoading(false);
           setError(e.message || String(e));
         });
 
         api.scoreLoaded.on((score) => {
-          console.log("[TabViewer] Score loaded — tracks:", score.tracks.length, "bars:", score.masterBars.length);
+          log?.info(
+            `alphaTab: score loaded — ${score.tracks.length} track(s), ${score.masterBars.length} bar(s)`
+          );
         });
 
+        log?.info(`alphaTab: feeding alphaTex (${tex.length} chars)...`);
         api.tex(tex);
       })
       .catch((err) => {
-        console.error("[TabViewer] Failed to import alphaTab:", err);
+        log?.error(`alphaTab: failed to load — ${err}`);
         setLoading(false);
         setError(`Failed to load alphaTab: ${err}`);
       });
@@ -76,14 +108,16 @@ export default function TabViewer({ tex }: TabViewerProps) {
         apiRef.current = null;
       }
     };
-  }, [tex]);
+  }, [tex, log, viewMode]);
 
   if (!tex) return null;
 
   return (
     <div className="mt-8">
-      <h3 className="text-lg font-semibold mb-3">Guitar Tablature</h3>
-      {loading && <p className="text-gray-400 text-sm mb-2 animate-pulse">Rendering tabs...</p>}
+      <h3 className="text-lg font-semibold mb-3">
+        {viewMode === "tab" ? "Guitar Tablature" : viewMode === "score" ? "Sheet Music" : "Score & Tablature"}
+      </h3>
+      {loading && <p className="text-gray-400 text-sm mb-2 animate-pulse">Rendering...</p>}
       {error && <p className="text-red-400 text-sm mb-2">Render error: {error}</p>}
       <div ref={containerRef} className="bg-gray-900 rounded-xl p-4 min-h-[200px] overflow-auto" />
     </div>

@@ -3,17 +3,27 @@ import { useMicrophone } from "../hooks/useMicrophone";
 interface MicrophoneRecorderProps {
   onRecordingComplete: (wavBlob: Blob) => void;
   disabled?: boolean;
+  onRecordingStart?: () => void;
+  onRecordingStop?: () => void;
 }
 
 export default function MicrophoneRecorder({
   onRecordingComplete,
   disabled,
+  onRecordingStart,
+  onRecordingStop,
 }: MicrophoneRecorderProps) {
   const { status, wavBlob, error, startRecording, stopRecording, resetMic } =
     useMicrophone();
 
+  const handleStart = () => {
+    startRecording();
+    onRecordingStart?.();
+  };
+
   const handleStop = () => {
     stopRecording();
+    onRecordingStop?.();
   };
 
   const handleUse = () => {
@@ -27,7 +37,7 @@ export default function MicrophoneRecorder({
     <div className="flex items-center gap-3">
       {status === "idle" && (
         <button
-          onClick={startRecording}
+          onClick={handleStart}
           disabled={disabled}
           className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
         >

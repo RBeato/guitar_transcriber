@@ -5,18 +5,22 @@ Algorithm:
 1. Group simultaneous notes into chords (within a time window).
 2. Generate all valid (string, fret) assignments per chord.
 3. DP across chord sequence, minimizing cost:
-   - Position jump between consecutive chords
+   - Position jump between consecutive chords (strong stickiness)
    - Internal fret stretch within a chord
+   - Deviation from target zone (if specified)
    - Slight penalty for high frets (prefer lower positions)
 4. Backtrack for optimal assignment path.
 """
 
+import logging
 from itertools import product
 from dataclasses import dataclass
 
 from app.config import settings
 from app.models.note_event import NoteEvent, TabNote
 from app.models.guitar import candidates_for_pitch, NUM_STRINGS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,6 +47,7 @@ class TabSolver:
         stretch_weight: float = settings.stretch_weight,
         high_fret_weight: float = settings.high_fret_penalty_weight,
         max_combos: int = 50,
+        target_fret: int | None = None,
     ):
         self.chord_window = chord_window_ms / 1000.0
         self.max_fret_span = max_fret_span
@@ -50,6 +55,7 @@ class TabSolver:
         self.stretch_weight = stretch_weight
         self.high_fret_weight = high_fret_weight
         self.max_combos = max_combos
+        self.target_fret = target_fret  # user-specified fret zone hint
 
     def solve(self, notes: list[NoteEvent]) -> list[TabNote]:
         if not notes:
@@ -57,33 +63,36 @@ class TabSolver:
 
         # Step 1: Group into chords
         chords = self._group_chords(notes)
+        logger.info(
+            "Solver: %d notes -> %d chord groups (window=%.0fms)",
+            len(notes), len(chords), self.chord_window * 1000,
+        )
 
         # Step 2: Generate valid assignments per chord
         all_assignments: list[list[ChordAssignment]] = []
         for chord in chords:
             assignments = self._generate_assignments(chord)
             if not assignments:
-                # Fallback: if no valid assignment, use best individual candidates
                 assignments = [self._fallback_assignment(chord)]
             all_assignments.append(assignments)
 
         # Step 3: Viterbi DP
         n = len(chords)
-        # dp[i][j] = min cost to reach chord i with assignment j
         dp: list[list[float]] = [[INF] * len(all_assignments[i]) for i in range(n)]
         back: list[list[int]] = [[-1] * len(all_assignments[i]) for i in range(n)]
 
-        # Initialize first chord
+        # Initialize first chord — include zone bias
         for j, assign in enumerate(all_assignments[0]):
-            dp[0][j] = self._internal_cost(assign)
+            dp[0][j] = self._internal_cost(assign) + self._zone_cost(assign)
 
         # Fill DP table
         for i in range(1, n):
             for j, curr_assign in enumerate(all_assignments[i]):
                 curr_internal = self._internal_cost(curr_assign)
+                curr_zone = self._zone_cost(curr_assign)
                 for k, prev_assign in enumerate(all_assignments[i - 1]):
                     transition = self._transition_cost(prev_assign, curr_assign)
-                    total = dp[i - 1][k] + transition + curr_internal
+                    total = dp[i - 1][k] + transition + curr_internal + curr_zone
                     if total < dp[i][j]:
                         dp[i][j] = total
                         back[i][j] = k
@@ -112,6 +121,17 @@ class TabSolver:
                 )
 
         result.sort(key=lambda n: (n.start_time, n.string))
+
+        # Log the position zone used
+        if result:
+            frets = [n.fret for n in result if n.fret > 0]
+            if frets:
+                logger.info(
+                    "Solver result: fret range %d-%d (avg %.1f), target=%s",
+                    min(frets), max(frets), sum(frets) / len(frets),
+                    self.target_fret if self.target_fret is not None else "auto",
+                )
+
         return result
 
     def _group_chords(self, notes: list[NoteEvent]) -> list[ChordGroup]:
@@ -132,24 +152,23 @@ class TabSolver:
 
     def _generate_assignments(self, chord: ChordGroup) -> list[ChordAssignment]:
         """Generate all valid (string, fret) combinations for a chord."""
-        # Get candidates per note
         per_note_candidates = []
         for note in chord.notes:
             cands = candidates_for_pitch(note.midi_pitch)
             if not cands:
-                return []  # Note outside guitar range
+                return []
             per_note_candidates.append(cands)
 
         # Enumerate all combinations
         valid: list[ChordAssignment] = []
         for combo in product(*per_note_candidates):
             combo_list = list(combo)
-            # Check: no duplicate strings
+            # No duplicate strings
             strings_used = [s for s, _ in combo_list]
             if len(strings_used) != len(set(strings_used)):
                 continue
 
-            # Check: fret span (excluding open strings)
+            # Fret span check (excluding open strings)
             fretted = [f for _, f in combo_list if f > 0]
             if fretted:
                 span = max(fretted) - min(fretted)
@@ -161,6 +180,10 @@ class TabSolver:
             if len(valid) >= self.max_combos:
                 break
 
+        # Sort by zone proximity so best candidates are kept when capped
+        if self.target_fret is not None:
+            valid.sort(key=lambda a: self._zone_cost(a))
+
         return valid
 
     def _fallback_assignment(self, chord: ChordGroup) -> ChordAssignment:
@@ -170,14 +193,19 @@ class TabSolver:
 
         for note in chord.notes:
             candidates = candidates_for_pitch(note.midi_pitch)
+            # Sort by proximity to target zone if specified
+            if self.target_fret is not None:
+                candidates.sort(key=lambda sf: abs(sf[1] - self.target_fret))
+            else:
+                candidates.sort(key=lambda sf: sf[1])  # prefer lower frets
+
             best = None
-            for s, f in sorted(candidates, key=lambda x: x[1]):  # prefer lower frets
+            for s, f in candidates:
                 if s not in used_strings:
                     best = (s, f)
                     used_strings.add(s)
                     break
             if best is None:
-                # All strings taken or no candidates — force string 1 fret 0
                 best = (1, max(0, note.midi_pitch - 64))
             assignment.append(best)
 
@@ -197,18 +225,41 @@ class TabSolver:
 
         return cost
 
+    def _zone_cost(self, assignment: ChordAssignment) -> float:
+        """Cost for deviating from the user's target fret zone."""
+        if self.target_fret is None:
+            return 0.0
+
+        # Penalize distance from target for each fretted note
+        cost = 0.0
+        zone_weight = 2.0  # strong bias toward the target zone
+        for _, fret in assignment:
+            if fret > 0:
+                cost += abs(fret - self.target_fret) * zone_weight
+            else:
+                # Open string: moderate penalty if target zone is high
+                cost += self.target_fret * 0.3
+        return cost
+
     def _transition_cost(
         self, prev: ChordAssignment, curr: ChordAssignment
     ) -> float:
-        """Cost of transitioning between two chord assignments."""
-        prev_pos = self._average_position(prev)
-        curr_pos = self._average_position(curr)
+        """Cost of transitioning between two chord assignments.
+
+        Uses squared jump for stronger position stickiness —
+        small jumps are cheap, big jumps are very expensive.
+        """
+        prev_pos = self._fret_position(prev)
+        curr_pos = self._fret_position(curr)
         jump = abs(curr_pos - prev_pos)
-        return jump * self.position_jump_weight
+        # Squared cost: 1-fret jump = 1, 3-fret jump = 9, 5-fret jump = 25
+        return (jump ** 2) * self.position_jump_weight
 
     @staticmethod
-    def _average_position(assignment: ChordAssignment) -> float:
-        """Average fret position (treating open strings as position 0)."""
-        if not assignment:
+    def _fret_position(assignment: ChordAssignment) -> float:
+        """Average fret position of fretted notes only (ignores open strings).
+        Falls back to 0 if all open strings."""
+        fretted = [f for _, f in assignment if f > 0]
+        if not fretted:
             return 0.0
-        return sum(f for _, f in assignment) / len(assignment)
+        return sum(fretted) / len(fretted)
