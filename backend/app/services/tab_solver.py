@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from app.config import settings
 from app.models.note_event import NoteEvent, TabNote
-from app.models.guitar import candidates_for_pitch, NUM_STRINGS
+from app.models.guitar import candidates_for_pitch, get_tuning, STANDARD_TUNING, NUM_STRINGS
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ class TabSolver:
         high_fret_weight: float = settings.high_fret_penalty_weight,
         max_combos: int = 50,
         target_fret: int | None = None,
+        tuning: dict[int, int] | None = None,
     ):
         self.chord_window = chord_window_ms / 1000.0
         self.max_fret_span = max_fret_span
@@ -56,6 +57,7 @@ class TabSolver:
         self.high_fret_weight = high_fret_weight
         self.max_combos = max_combos
         self.target_fret = target_fret  # user-specified fret zone hint
+        self.tuning = tuning or STANDARD_TUNING
 
     def solve(self, notes: list[NoteEvent]) -> list[TabNote]:
         if not notes:
@@ -154,7 +156,7 @@ class TabSolver:
         """Generate all valid (string, fret) combinations for a chord."""
         per_note_candidates = []
         for note in chord.notes:
-            cands = candidates_for_pitch(note.midi_pitch)
+            cands = candidates_for_pitch(note.midi_pitch, self.tuning)
             if not cands:
                 return []
             per_note_candidates.append(cands)
@@ -192,7 +194,7 @@ class TabSolver:
         assignment: ChordAssignment = []
 
         for note in chord.notes:
-            candidates = candidates_for_pitch(note.midi_pitch)
+            candidates = candidates_for_pitch(note.midi_pitch, self.tuning)
             # Sort by proximity to target zone if specified
             if self.target_fret is not None:
                 candidates.sort(key=lambda sf: abs(sf[1] - self.target_fret))

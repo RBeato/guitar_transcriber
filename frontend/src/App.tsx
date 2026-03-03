@@ -10,6 +10,9 @@ import LogPanel from "./components/LogPanel";
 import PositionHint from "./components/PositionHint";
 import FilterControls from "./components/FilterControls";
 import MidiStatus from "./components/MidiStatus";
+import MidiFileUploader from "./components/MidiFileUploader";
+import MidiMonitor from "./components/MidiMonitor";
+import TuningSelector from "./components/TuningSelector";
 import ComparisonView from "./components/ComparisonView";
 import { useTranscription } from "./hooks/useTranscription";
 import { useWebMidi } from "./hooks/useWebMidi";
@@ -30,14 +33,17 @@ function App() {
   const [pendingMidiNotes, setPendingMidiNotes] = useState<MidiNote[] | null>(null);
   const [pendingAudioBlob, setPendingAudioBlob] = useState<File | Blob | null>(null);
   const [showComparison, setShowComparison] = useState(false);
+  const [tuning, setTuning] = useState<string | null>(null);
 
   const logger = useMemo(
     () => ({ info, success, warn, error: logError }),
     [info, success, warn, logError],
   );
 
-  const { status, result, error, audioSource, transcribe, transcribeMidiNotes, reset } =
-    useTranscription(logger);
+  const {
+    status, result, error, audioSource,
+    transcribe, transcribeMidiNotes, transcribeMidiFile: transcribeMidiFileHook, reset,
+  } = useTranscription(logger);
 
   const midi = useWebMidi();
 
@@ -57,16 +63,30 @@ function App() {
       setPendingMidiNotes(null);
       setPendingAudioBlob(null);
       info(`File selected: ${file.name} (${(file.size / 1024).toFixed(0)} KB)`);
-      transcribe(file, targetFret, filterParams);
+      transcribe(file, targetFret, filterParams, tuning);
     },
-    [transcribe, clearLogs, info, targetFret, filterParams],
+    [transcribe, clearLogs, info, targetFret, filterParams, tuning],
+  );
+
+  const handleMidiFile = useCallback(
+    (file: File) => {
+      clearLogs();
+      setShowComparison(false);
+      setPendingMidiNotes(null);
+      setPendingAudioBlob(null);
+      info(`MIDI file selected: ${file.name} (${(file.size / 1024).toFixed(0)} KB)`);
+      transcribeMidiFileHook(file, targetFret, tuning);
+    },
+    [clearLogs, info, targetFret, tuning, transcribeMidiFileHook],
   );
 
   const handleRecordingStart = useCallback(() => {
     setIsRecording(true);
     if (midi.status === "connected") {
-      midi.startCapture();
-      info("MIDI capture started alongside audio recording");
+      // Pass shared epoch so MIDI timestamps align with audio recording
+      const epoch = performance.now();
+      midi.startCapture(epoch);
+      info("MIDI capture started alongside audio recording (synced)");
     }
   }, [midi.status, midi.startCapture, info]);
 
@@ -99,10 +119,10 @@ function App() {
       } else {
         // Audio only
         setPendingAudioBlob(null);
-        transcribe(blob, targetFret, filterParams);
+        transcribe(blob, targetFret, filterParams, tuning);
       }
     },
-    [transcribe, clearLogs, info, targetFret, filterParams, pendingMidiNotes],
+    [transcribe, clearLogs, info, targetFret, filterParams, tuning, pendingMidiNotes],
   );
 
   const handlePostRecordChoice = useCallback(
@@ -110,11 +130,11 @@ function App() {
       if (!pendingAudioBlob) return;
 
       if (choice === "audio") {
-        transcribe(pendingAudioBlob, targetFret, filterParams);
+        transcribe(pendingAudioBlob, targetFret, filterParams, tuning);
         setPendingAudioBlob(null);
         setPendingMidiNotes(null);
       } else if (choice === "midi" && pendingMidiNotes) {
-        transcribeMidiNotes(pendingMidiNotes, targetFret);
+        transcribeMidiNotes(pendingMidiNotes, targetFret, tuning);
         setPendingAudioBlob(null);
         setPendingMidiNotes(null);
       } else if (choice === "compare" && pendingMidiNotes) {
@@ -124,6 +144,7 @@ function App() {
           pendingMidiNotes,
           targetFret,
           filterParams,
+          tuning,
         );
         setPendingAudioBlob(null);
         // Keep pendingMidiNotes for re-runs
@@ -134,6 +155,7 @@ function App() {
       pendingMidiNotes,
       targetFret,
       filterParams,
+      tuning,
       transcribe,
       transcribeMidiNotes,
       comparison.runComparison,
@@ -153,12 +175,15 @@ function App() {
   const handleReSolve = useCallback(
     (fret: number | null) => {
       setTargetFret(fret);
-      if (showComparison && audioSource && pendingMidiNotes) {
-        comparison.rerunAudio(audioSource, fret, filterParams);
+      if (showComparison && pendingMidiNotes) {
+        if (audioSource) {
+          comparison.rerunAudio(audioSource, fret, filterParams, tuning);
+        }
+        comparison.rerunMidi(pendingMidiNotes, fret, tuning);
       } else if (audioSource && status === "done") {
         clearLogs();
         info(`Re-solving with position hint: ${fret != null ? `fret ${fret}` : "auto"}`);
-        transcribe(audioSource, fret, filterParams);
+        transcribe(audioSource, fret, filterParams, tuning);
       }
     },
     [
@@ -168,9 +193,11 @@ function App() {
       clearLogs,
       info,
       filterParams,
+      tuning,
       showComparison,
       pendingMidiNotes,
       comparison.rerunAudio,
+      comparison.rerunMidi,
     ],
   );
 
@@ -179,27 +206,54 @@ function App() {
       setFilterParams(params);
       // Re-run audio pipeline with new filters if we have results
       if (showComparison && audioSource) {
-        comparison.rerunAudio(audioSource, targetFret, params);
+        comparison.rerunAudio(audioSource, targetFret, params, tuning);
       }
     },
-    [showComparison, audioSource, targetFret, comparison.rerunAudio],
+    [showComparison, audioSource, targetFret, tuning, comparison.rerunAudio],
   );
 
-  const handleDownload = useCallback(() => {
-    const gp5 = showComparison
-      ? comparison.midiResult?.gp5Base64 || comparison.audioResult?.gp5Base64
-      : result?.gp5Base64;
-    if (!gp5) return;
-    const bytes = Uint8Array.from(atob(gp5), (c) => c.charCodeAt(0));
-    const blob = new Blob([bytes], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "transcription.gp5";
-    a.click();
-    URL.revokeObjectURL(url);
-    info("Downloaded transcription.gp5");
-  }, [result, comparison.audioResult, comparison.midiResult, showComparison, info]);
+  const handleDownload = useCallback(
+    (format?: "midi" | "musicxml") => {
+      const activeResult = showComparison
+        ? comparison.midiResult || comparison.audioResult
+        : result;
+      if (!activeResult) return;
+
+      let base64Data: string;
+      let filename: string;
+      let mimeType: string;
+
+      if (format === "midi") {
+        base64Data = activeResult.midiBase64;
+        filename = "transcription.mid";
+        mimeType = "audio/midi";
+      } else if (format === "musicxml") {
+        base64Data = activeResult.musicxmlBase64;
+        filename = "transcription.musicxml";
+        mimeType = "application/vnd.recordare.musicxml+xml";
+      } else {
+        base64Data = activeResult.gp5Base64;
+        filename = "transcription.gp5";
+        mimeType = "application/octet-stream";
+      }
+
+      if (!base64Data) {
+        warn(`No ${format || "gp5"} data available`);
+        return;
+      }
+
+      const bytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      info(`Downloaded ${filename}`);
+    },
+    [result, comparison.audioResult, comparison.midiResult, showComparison, info, warn],
+  );
 
   const handleReset = useCallback(() => {
     clearLogs();
@@ -224,12 +278,15 @@ function App() {
       <AudioUploader onFileSelected={handleFile} disabled={isProcessing} />
 
       <div className="mt-4 flex items-center justify-between">
-        <MicrophoneRecorder
-          onRecordingComplete={handleRecording}
-          disabled={isProcessing}
-          onRecordingStart={handleRecordingStart}
-          onRecordingStop={handleRecordingStop}
-        />
+        <div className="flex items-center gap-2">
+          <MicrophoneRecorder
+            onRecordingComplete={handleRecording}
+            disabled={isProcessing}
+            onRecordingStart={handleRecordingStart}
+            onRecordingStop={handleRecordingStop}
+          />
+          <MidiFileUploader onFileSelected={handleMidiFile} disabled={isProcessing} />
+        </div>
         {(status !== "idle" || showComparison) && (
           <button
             onClick={handleReset}
@@ -251,6 +308,15 @@ function App() {
           onSelectPort={midi.selectPort}
         />
       </div>
+
+      {/* Live MIDI monitor */}
+      {(midi.status === "recording" || midi.noteCount > 0) && (
+        <MidiMonitor
+          isRecording={midi.status === "recording"}
+          lastNote={midi.lastNote}
+          noteCount={midi.noteCount}
+        />
+      )}
 
       {/* Post-recording choice when both audio + MIDI are available */}
       {pendingAudioBlob && pendingMidiNotes && (
@@ -297,9 +363,16 @@ function App() {
         disabled={isProcessing}
       />
 
+      <TuningSelector
+        value={tuning}
+        onChange={setTuning}
+        disabled={isProcessing}
+      />
+
       <FilterControls
         value={filterParams}
         onChange={handleFilterChange}
+        onInitialLoad={setFilterParams}
         disabled={isProcessing}
       />
 
@@ -344,10 +417,22 @@ function App() {
       {hasResult && (
         <div className="mt-4 flex items-center gap-4">
           <button
-            onClick={handleDownload}
+            onClick={() => handleDownload()}
             className="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium transition-colors"
           >
             Download .gp5
+          </button>
+          <button
+            onClick={() => handleDownload("midi")}
+            className="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-sm font-medium transition-colors"
+          >
+            .mid
+          </button>
+          <button
+            onClick={() => handleDownload("musicxml")}
+            className="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-sm font-medium transition-colors"
+          >
+            .musicxml
           </button>
           <span className="text-sm text-gray-400">
             {showComparison

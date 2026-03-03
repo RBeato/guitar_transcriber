@@ -37,6 +37,9 @@ class GuitarProBuilder:
         self.ticks_per_second = (tempo * ticks_per_beat) / 60.0
 
     def build(self, tab_notes: list[TabNote]) -> bytes:
+        return self.build_with_tuning(tab_notes, STANDARD_TUNING)
+
+    def build_with_tuning(self, tab_notes: list[TabNote], tuning: dict[int, int]) -> bytes:
         song = models.Song()
         song.title = "Guitar Transcription"
         song.tempo = self.tempo
@@ -48,7 +51,7 @@ class GuitarProBuilder:
         track.isPercussionTrack = False
         track.strings = [
             models.GuitarString(s, p)
-            for s, p in sorted(STANDARD_TUNING.items())
+            for s, p in sorted(tuning.items())
         ]
 
         if not tab_notes:

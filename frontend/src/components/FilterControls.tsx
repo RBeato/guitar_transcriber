@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { FilteringParams } from "../services/api";
 
 const DEFAULTS: Required<FilteringParams> = {
@@ -8,6 +8,34 @@ const DEFAULTS: Required<FilteringParams> = {
   minimumVelocity: 0.4,
   mergeToleranceMs: 30,
 };
+
+const STORAGE_KEY = "gt_filter_params";
+const PRESETS_KEY = "gt_filter_presets";
+
+interface FilterPreset {
+  name: string;
+  params: FilteringParams;
+}
+
+function loadSavedParams(): FilteringParams {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+function loadPresets(): FilterPreset[] {
+  try {
+    const raw = localStorage.getItem(PRESETS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+function savePresets(presets: FilterPreset[]) {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+}
 
 interface SliderConfig {
   key: keyof FilteringParams;
@@ -66,16 +94,39 @@ const SLIDERS: SliderConfig[] = [
 interface FilterControlsProps {
   value: FilteringParams;
   onChange: (params: FilteringParams) => void;
+  onInitialLoad?: (params: FilteringParams) => void;
   disabled?: boolean;
 }
 
 export default function FilterControls({
   value,
   onChange,
+  onInitialLoad,
   disabled,
 }: FilterControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [presets, setPresets] = useState<FilterPreset[]>([]);
+  const [presetName, setPresetName] = useState("");
+  const [showPresetInput, setShowPresetInput] = useState(false);
+
+  // Load saved params on mount
+  useEffect(() => {
+    const saved = loadSavedParams();
+    if (Object.keys(saved).length > 0) {
+      onInitialLoad?.(saved);
+    }
+    setPresets(loadPresets());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist current params to localStorage whenever they change
+  useEffect(() => {
+    if (Object.keys(value).length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, [value]);
 
   const getValue = (key: keyof FilteringParams): number =>
     value[key] ?? DEFAULTS[key];
@@ -87,6 +138,35 @@ export default function FilterControls({
   const handleReset = () => {
     onChange({});
   };
+
+  const handleSavePreset = useCallback(() => {
+    if (!presetName.trim()) return;
+    const newPreset: FilterPreset = {
+      name: presetName.trim(),
+      params: { ...value },
+    };
+    const updated = [...presets.filter((p) => p.name !== newPreset.name), newPreset];
+    setPresets(updated);
+    savePresets(updated);
+    setPresetName("");
+    setShowPresetInput(false);
+  }, [presetName, value, presets]);
+
+  const handleLoadPreset = useCallback(
+    (preset: FilterPreset) => {
+      onChange(preset.params);
+    },
+    [onChange],
+  );
+
+  const handleDeletePreset = useCallback(
+    (name: string) => {
+      const updated = presets.filter((p) => p.name !== name);
+      setPresets(updated);
+      savePresets(updated);
+    },
+    [presets],
+  );
 
   const isDefault =
     Object.keys(value).length === 0 ||
@@ -143,16 +223,82 @@ export default function FilterControls({
             >
               {showAdvanced ? "Hide advanced" : "Show advanced"}
             </button>
-            {!isDefault && (
-              <button
-                onClick={handleReset}
-                disabled={disabled}
-                className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
-              >
-                Reset to defaults
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {!isDefault && (
+                <>
+                  <button
+                    onClick={() => setShowPresetInput(!showPresetInput)}
+                    disabled={disabled}
+                    className="text-xs text-green-400 hover:text-green-300 transition-colors disabled:opacity-50"
+                  >
+                    Save preset
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    disabled={disabled}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-50"
+                  >
+                    Reset to defaults
+                  </button>
+                </>
+              )}
+            </div>
           </div>
+
+          {/* Save preset input */}
+          {showPresetInput && (
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSavePreset()}
+                placeholder="Preset name..."
+                className="flex-1 text-xs bg-gray-900 border border-gray-600 rounded px-2 py-1 text-gray-300 placeholder-gray-600"
+                autoFocus
+              />
+              <button
+                onClick={handleSavePreset}
+                disabled={!presetName.trim()}
+                className="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 text-white disabled:opacity-50 transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setShowPresetInput(false)}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* Preset list */}
+          {presets.length > 0 && (
+            <div className="pt-1 border-t border-gray-700">
+              <span className="text-xs text-gray-500">Presets:</span>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {presets.map((preset) => (
+                  <div key={preset.name} className="flex items-center gap-0.5">
+                    <button
+                      onClick={() => handleLoadPreset(preset)}
+                      disabled={disabled}
+                      className="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors disabled:opacity-50"
+                    >
+                      {preset.name}
+                    </button>
+                    <button
+                      onClick={() => handleDeletePreset(preset.name)}
+                      className="text-xs text-gray-600 hover:text-red-400 transition-colors px-0.5"
+                      title="Delete preset"
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

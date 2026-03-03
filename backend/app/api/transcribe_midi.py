@@ -23,6 +23,7 @@ class MidiNoteInput(BaseModel):
 class MidiTranscribeRequest(BaseModel):
     notes: list[MidiNoteInput]
     target_fret: int | None = None
+    tuning: str | None = None
 
 
 @router.post("/transcribe-midi")
@@ -54,6 +55,7 @@ async def transcribe_midi(request: MidiTranscribeRequest):
         result = service.transcribe_from_notes(
             note_events,
             target_fret=request.target_fret,
+            tuning_name=request.tuning,
         )
     except Exception as e:
         logger.exception("MIDI transcription failed")
@@ -69,6 +71,8 @@ async def transcribe_midi(request: MidiTranscribeRequest):
     return {
         "tex": result["tex"],
         "gp5": base64.b64encode(result["gp5"]).decode(),
+        "midi": base64.b64encode(result["midi"]).decode(),
+        "musicxml": base64.b64encode(result["musicxml"]).decode(),
         "noteCount": result["note_count"],
         "notesSummary": " ".join(notes_summary),
     }

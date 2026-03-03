@@ -20,12 +20,14 @@ async def transcribe(
     minimum_note_length: float | None = Form(default=None),
     minimum_velocity: float | None = Form(default=None),
     merge_tolerance_ms: float | None = Form(default=None),
+    tuning: str | None = Form(default=None),
 ):
     logger.info(
-        "POST /api/transcribe — filename=%s content_type=%s target_fret=%s",
+        "POST /api/transcribe — filename=%s content_type=%s target_fret=%s tuning=%s",
         file.filename,
         file.content_type,
         target_fret,
+        tuning,
     )
 
     if not file.filename:
@@ -51,6 +53,7 @@ async def transcribe(
             file,
             target_fret=target_fret,
             detection_params=detection_params or None,
+            tuning_name=tuning,
         )
     except HTTPException:
         raise
@@ -71,9 +74,14 @@ async def transcribe(
     for n in result.get("tab_notes", [])[:20]:
         notes_summary.append(f"s{n.string}f{n.fret}({n.midi_pitch})")
 
-    return {
+    response = {
         "tex": result["tex"],
         "gp5": base64.b64encode(result["gp5"]).decode(),
+        "midi": base64.b64encode(result["midi"]).decode(),
+        "musicxml": base64.b64encode(result["musicxml"]).decode(),
         "noteCount": result["note_count"],
         "notesSummary": " ".join(notes_summary),
     }
+    if "tempo" in result:
+        response["detectedTempo"] = result["tempo"]
+    return response

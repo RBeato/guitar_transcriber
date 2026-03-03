@@ -17,11 +17,18 @@ interface ActiveNote {
   startTime: number;
 }
 
+export interface MidiNoteEvent {
+  pitch: number;
+  velocity: number;
+  timestamp: number;
+}
+
 export function useWebMidi() {
   const [status, setStatus] = useState<MidiStatus>("disconnected");
   const [portName, setPortName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [noteCount, setNoteCount] = useState(0);
+  const [lastNote, setLastNote] = useState<MidiNoteEvent | null>(null);
   const [availablePorts, setAvailablePorts] = useState<
     { id: string; name: string }[]
   >([]);
@@ -35,7 +42,7 @@ export function useWebMidi() {
   const initialize = useCallback(async (preferredPortId?: string) => {
     if (!navigator.requestMIDIAccess) {
       setStatus("unavailable");
-      setError("Web MIDI API not supported in this browser");
+      setError("Web MIDI API is not available. Use Chrome, Edge, or Brave.");
       return;
     }
 
@@ -87,13 +94,29 @@ export function useWebMidi() {
         setStatus("disconnected");
       }
 
-      // Listen for port changes
-      access.onstatechange = () => {
+      // Listen for port changes (connect/disconnect)
+      access.onstatechange = (event) => {
         const newPorts: { id: string; name: string }[] = [];
         access.inputs.forEach((input) => {
           newPorts.push({ id: input.id, name: input.name || input.id });
         });
         setAvailablePorts(newPorts);
+
+        // Detect if the active device was disconnected
+        const midiEvent = event as MIDIConnectionEvent;
+        if (
+          midiEvent.port &&
+          midiEvent.port.state === "disconnected" &&
+          activeInputRef.current &&
+          midiEvent.port.id === activeInputRef.current.id
+        ) {
+          activeInputRef.current.onmidimessage = null;
+          activeInputRef.current = null;
+          setStatus("error");
+          setError("MIDI device disconnected. Reconnect and try again.");
+          setPortName(null);
+          return;
+        }
 
         if (newPorts.length === 0) {
           activeInputRef.current = null;
@@ -103,9 +126,12 @@ export function useWebMidi() {
       };
     } catch (err) {
       setStatus("error");
-      setError(
-        err instanceof Error ? err.message : "Failed to access MIDI devices",
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("SecurityError") || message.includes("permission")) {
+        setError("MIDI permission denied. Allow MIDI access in your browser settings.");
+      } else {
+        setError(`Failed to access MIDI devices: ${message}`);
+      }
     }
   }, []);
 
@@ -122,14 +148,16 @@ export function useWebMidi() {
     [],
   );
 
-  const startCapture = useCallback(() => {
+  const startCapture = useCallback((epochMs?: number) => {
     const input = activeInputRef.current;
     if (!input) return;
 
     capturedNotesRef.current = [];
     activeNotesRef.current.clear();
     setNoteCount(0);
-    recordingStartRef.current = performance.now();
+    setLastNote(null);
+    // Use shared epoch if provided (for synchronizing with audio recording)
+    recordingStartRef.current = epochMs ?? performance.now();
 
     input.onmidimessage = (event: MIDIMessageEvent) => {
       const data = event.data;
@@ -145,11 +173,13 @@ export function useWebMidi() {
 
       if (command === 0x90 && velocity > 0) {
         // Note On
+        const vel = velocity / 127;
         activeNotesRef.current.set(pitch, {
           pitch,
-          velocity: velocity / 127,
+          velocity: vel,
           startTime: now,
         });
+        setLastNote({ pitch, velocity: vel, timestamp: performance.now() });
       } else if (command === 0x80 || (command === 0x90 && velocity === 0)) {
         // Note Off
         const active = activeNotesRef.current.get(pitch);
@@ -198,6 +228,7 @@ export function useWebMidi() {
     portName,
     error,
     noteCount,
+    lastNote,
     availablePorts,
     initialize,
     selectPort,

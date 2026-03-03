@@ -10,6 +10,7 @@ Format reference: https://alphatab.net/docs/alphatex/introduction
 import math
 from app.config import settings
 from app.models.note_event import TabNote
+from app.models.guitar import STANDARD_TUNING
 
 
 # Duration in seconds -> alphaTex duration value
@@ -24,6 +25,24 @@ DURATION_THRESHOLDS = [
 ]
 
 
+_NOTE_NAMES = ["c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"]
+
+
+def _midi_to_alphatex_note(midi_pitch: int) -> str:
+    """Convert a MIDI pitch to alphaTex tuning notation (e.g., 64 -> 'e5')."""
+    octave = (midi_pitch // 12) - 1
+    note = _NOTE_NAMES[midi_pitch % 12]
+    return f"{note}{octave}"
+
+
+def _tuning_to_alphatex(tuning: dict[int, int]) -> str:
+    """Convert a tuning dict to alphaTex tuning string (string 1 first)."""
+    return " ".join(
+        _midi_to_alphatex_note(tuning[s])
+        for s in sorted(tuning.keys())
+    )
+
+
 class AlphaTexBuilder:
     """Converts TabNote list to an alphaTex string."""
 
@@ -31,14 +50,18 @@ class AlphaTexBuilder:
         self.tempo = tempo
 
     def build(self, tab_notes: list[TabNote]) -> str:
+        return self.build_with_tuning(tab_notes, STANDARD_TUNING)
+
+    def build_with_tuning(self, tab_notes: list[TabNote], tuning: dict[int, int]) -> str:
         if not tab_notes:
             return r"\title 'Guitar Transcription' \tempo 120 . 1 r"
 
+        tuning_str = _tuning_to_alphatex(tuning)
         lines = [
             r"\title 'Guitar Transcription'",
             rf"\tempo {self.tempo}",
             r"\instrument 25",
-            r"\tuning e5 b4 g4 d4 a3 e3",
+            rf"\tuning {tuning_str}",
             ".",
         ]
 

@@ -33,6 +33,7 @@ export function useComparison(log?: Logger) {
       midiNotes: MidiNote[],
       targetFret?: number | null,
       filterParams?: FilteringParams,
+      tuning?: string | null,
     ) => {
       setState({
         status: "running",
@@ -45,8 +46,8 @@ export function useComparison(log?: Logger) {
       log?.info("Running A/B comparison: Audio vs MIDI pipelines...");
 
       const [audioSettled, midiSettled] = await Promise.allSettled([
-        transcribeAudio(audioBlob, log, targetFret, filterParams),
-        transcribeMidi(midiNotes, log, targetFret),
+        transcribeAudio(audioBlob, log, targetFret, filterParams, tuning),
+        transcribeMidi(midiNotes, log, targetFret, tuning),
       ]);
 
       const audioResult =
@@ -85,6 +86,7 @@ export function useComparison(log?: Logger) {
       audioBlob: File | Blob,
       targetFret?: number | null,
       filterParams?: FilteringParams,
+      tuning?: string | null,
     ) => {
       log?.info("Re-running audio pipeline with updated filters...");
       try {
@@ -93,6 +95,7 @@ export function useComparison(log?: Logger) {
           log,
           targetFret,
           filterParams,
+          tuning,
         );
         setState((prev) => ({
           ...prev,
@@ -110,6 +113,27 @@ export function useComparison(log?: Logger) {
     [log],
   );
 
+  const rerunMidi = useCallback(
+    async (midiNotes: MidiNote[], targetFret?: number | null, tuning?: string | null) => {
+      log?.info("Re-running MIDI pipeline with updated position...");
+      try {
+        const midiResult = await transcribeMidi(midiNotes, log, targetFret, tuning);
+        setState((prev) => ({
+          ...prev,
+          midiResult,
+          midiError: null,
+        }));
+      } catch (err) {
+        setState((prev) => ({
+          ...prev,
+          midiResult: null,
+          midiError: String(err),
+        }));
+      }
+    },
+    [log],
+  );
+
   const resetComparison = useCallback(() => {
     setState({
       status: "idle",
@@ -120,5 +144,5 @@ export function useComparison(log?: Logger) {
     });
   }, []);
 
-  return { ...state, runComparison, rerunAudio, resetComparison };
+  return { ...state, runComparison, rerunAudio, rerunMidi, resetComparison };
 }

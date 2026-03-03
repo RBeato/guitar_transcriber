@@ -3,6 +3,8 @@ const API_BASE = "/api";
 export interface TranscriptionResult {
   tex: string;
   gp5Base64: string;
+  midiBase64: string;
+  musicxmlBase64: string;
   noteCount: number;
   notesSummary: string;
 }
@@ -34,6 +36,7 @@ export async function transcribeAudio(
   log?: Logger,
   targetFret?: number | null,
   filterParams?: FilteringParams,
+  tuning?: string | null,
 ): Promise<TranscriptionResult> {
   const name = file instanceof File ? file.name : "recording.wav";
   const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
@@ -58,6 +61,10 @@ export async function transcribeAudio(
       formData.append("minimum_velocity", String(filterParams.minimumVelocity));
     if (filterParams.mergeToleranceMs != null)
       formData.append("merge_tolerance_ms", String(filterParams.mergeToleranceMs));
+  }
+
+  if (tuning) {
+    formData.append("tuning", tuning);
   }
 
   log?.info("POST /api/transcribe — waiting for server...");
@@ -93,6 +100,8 @@ export async function transcribeAudio(
   return {
     tex: data.tex,
     gp5Base64: data.gp5,
+    midiBase64: data.midi || "",
+    musicxmlBase64: data.musicxml || "",
     noteCount: data.noteCount,
     notesSummary: data.notesSummary || "",
   };
@@ -102,10 +111,11 @@ export async function transcribeMidi(
   notes: MidiNote[],
   log?: Logger,
   targetFret?: number | null,
+  tuning?: string | null,
 ): Promise<TranscriptionResult> {
   log?.info(`Sending ${notes.length} MIDI notes for transcription...`);
 
-  const body = {
+  const body: Record<string, unknown> = {
     notes: notes.map((n) => ({
       start_time: n.startTime,
       end_time: n.endTime,
@@ -114,6 +124,9 @@ export async function transcribeMidi(
     })),
     target_fret: targetFret ?? null,
   };
+  if (tuning) {
+    body.tuning = tuning;
+  }
 
   const t0 = performance.now();
 
@@ -145,6 +158,63 @@ export async function transcribeMidi(
   return {
     tex: data.tex,
     gp5Base64: data.gp5,
+    midiBase64: data.midi || "",
+    musicxmlBase64: data.musicxml || "",
+    noteCount: data.noteCount,
+    notesSummary: data.notesSummary || "",
+  };
+}
+
+export async function transcribeMidiFile(
+  file: File,
+  log?: Logger,
+  targetFret?: number | null,
+  tuning?: string | null,
+): Promise<TranscriptionResult> {
+  const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+  log?.info(`Uploading MIDI file: ${file.name} (${sizeMB} MB)...`);
+
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  if (targetFret != null) {
+    formData.append("target_fret", String(targetFret));
+  }
+  if (tuning) {
+    formData.append("tuning", tuning);
+  }
+
+  log?.info("POST /api/transcribe-midi-file — waiting for server...");
+  const t0 = performance.now();
+
+  const response = await fetch(`${API_BASE}/transcribe-midi-file`, {
+    method: "POST",
+    body: formData,
+  });
+
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+
+  if (!response.ok) {
+    const error = await response
+      .json()
+      .catch(() => ({ detail: "MIDI file transcription failed" }));
+    const msg = error.detail || `Server error: ${response.status}`;
+    log?.error(`Server returned ${response.status} after ${elapsed}s: ${msg}`);
+    throw new Error(msg);
+  }
+
+  log?.info(`Server responded 200 OK in ${elapsed}s — parsing JSON...`);
+  const data = await response.json();
+
+  log?.success(`MIDI file transcription complete: ${data.noteCount} notes`);
+  if (data.notesSummary) {
+    log?.info(`Notes: ${data.notesSummary}`);
+  }
+
+  return {
+    tex: data.tex,
+    gp5Base64: data.gp5,
+    midiBase64: data.midi || "",
+    musicxmlBase64: data.musicxml || "",
     noteCount: data.noteCount,
     notesSummary: data.notesSummary || "",
   };

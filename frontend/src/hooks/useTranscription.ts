@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import {
   transcribeAudio,
   transcribeMidi,
+  transcribeMidiFile as apiTranscribeMidiFile,
   TranscriptionResult,
   Logger,
   FilteringParams,
@@ -32,6 +33,7 @@ export function useTranscription(log?: Logger) {
       file: File | Blob,
       targetFret?: number | null,
       filterParams?: FilteringParams,
+      tuning?: string | null,
     ) => {
       setState((prev) => ({
         ...prev,
@@ -43,7 +45,7 @@ export function useTranscription(log?: Logger) {
       log?.info("Starting transcription pipeline...");
 
       try {
-        const result = await transcribeAudio(file, log, targetFret, filterParams);
+        const result = await transcribeAudio(file, log, targetFret, filterParams, tuning);
         setState((prev) => ({ ...prev, status: "done", result, error: null }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
@@ -55,7 +57,7 @@ export function useTranscription(log?: Logger) {
   );
 
   const transcribeMidiNotes = useCallback(
-    async (notes: MidiNote[], targetFret?: number | null) => {
+    async (notes: MidiNote[], targetFret?: number | null, tuning?: string | null) => {
       setState((prev) => ({
         ...prev,
         status: "processing",
@@ -66,11 +68,35 @@ export function useTranscription(log?: Logger) {
       log?.info(`Starting MIDI transcription (${notes.length} notes)...`);
 
       try {
-        const result = await transcribeMidi(notes, log, targetFret);
+        const result = await transcribeMidi(notes, log, targetFret, tuning);
         setState((prev) => ({ ...prev, status: "done", result, error: null }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         log?.error(`MIDI pipeline failed: ${message}`);
+        setState((prev) => ({ ...prev, status: "error", result: null, error: message }));
+      }
+    },
+    [log],
+  );
+
+  const transcribeMidiFile = useCallback(
+    async (file: File, targetFret?: number | null, tuning?: string | null) => {
+      setState((prev) => ({
+        ...prev,
+        status: "processing",
+        result: null,
+        error: null,
+        audioSource: null,
+        midiNotes: null,
+      }));
+      log?.info(`Starting MIDI file transcription: ${file.name}...`);
+
+      try {
+        const result = await apiTranscribeMidiFile(file, log, targetFret, tuning);
+        setState((prev) => ({ ...prev, status: "done", result, error: null }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        log?.error(`MIDI file pipeline failed: ${message}`);
         setState((prev) => ({ ...prev, status: "error", result: null, error: message }));
       }
     },
@@ -87,5 +113,5 @@ export function useTranscription(log?: Logger) {
     });
   }, []);
 
-  return { ...state, transcribe, transcribeMidiNotes, reset };
+  return { ...state, transcribe, transcribeMidiNotes, transcribeMidiFile, reset };
 }

@@ -10,6 +10,7 @@ export function useMicrophone() {
 
   const contextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Float32Array[]>([]);
@@ -31,17 +32,42 @@ export function useMicrophone() {
       const source = ctx.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // Use ScriptProcessor to collect raw PCM (works everywhere)
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      // Try AudioWorklet first, fall back to ScriptProcessorNode
+      let useWorklet = false;
+      if (ctx.audioWorklet) {
+        try {
+          await ctx.audioWorklet.addModule("/audio-recorder-processor.js");
+          useWorklet = true;
+        } catch {
+          // AudioWorklet unavailable (insecure context, file not found, etc.)
+        }
+      }
 
-      processor.onaudioprocess = (e) => {
-        const data = e.inputBuffer.getChannelData(0);
-        chunksRef.current.push(new Float32Array(data));
-      };
+      if (useWorklet) {
+        const workletNode = new AudioWorkletNode(ctx, "audio-recorder-processor");
+        workletNodeRef.current = workletNode;
 
-      source.connect(processor);
-      processor.connect(ctx.destination);
+        workletNode.port.onmessage = (event: MessageEvent) => {
+          if (event.data instanceof Float32Array) {
+            chunksRef.current.push(new Float32Array(event.data));
+          }
+        };
+
+        source.connect(workletNode);
+        workletNode.connect(ctx.destination);
+      } else {
+        // Fallback: deprecated ScriptProcessorNode (still widely supported)
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
+
+        processor.onaudioprocess = (e) => {
+          const data = e.inputBuffer.getChannelData(0);
+          chunksRef.current.push(new Float32Array(data));
+        };
+
+        source.connect(processor);
+        processor.connect(ctx.destination);
+      }
 
       setStatus("recording");
     } catch (err) {
@@ -50,8 +76,15 @@ export function useMicrophone() {
   }, []);
 
   const stopRecording = useCallback(() => {
-    // Disconnect audio nodes
+    // Stop worklet or processor
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.postMessage("stop");
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
     processorRef.current?.disconnect();
+    processorRef.current = null;
+
     sourceRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     contextRef.current?.close();
